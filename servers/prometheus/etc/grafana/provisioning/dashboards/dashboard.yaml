@@ -1,0 +1,16 @@
+# All options: https://grafana.com/docs/grafana/latest/administration/provisioning/
+# Note, where is now way to save dashboard from grafana to path, so manual saving required.
+apiVersion: 1
+
+providers:
+ - name: 'Import dashboards'
+   orgId: 1
+   #folder: 'node_exporter' # import 'name' to this grafana GUI folder
+   folderUid: ''
+   type: file
+   disableDeletion: true
+   updateIntervalSeconds: 10
+   allowUiUpdates: true
+   options:
+     path: /opt/***/dashboards
+     foldersFromFilesStructure: true

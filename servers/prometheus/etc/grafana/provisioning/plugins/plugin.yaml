@@ -1,0 +1,12 @@
+# Find plugin in http://test-prometheus.***:3000/plugins
+# then Click on wanter plugin
+# in IRL bar you will see plugin name like 'savantly-heatmap-panel':
+# http://test-prometheus.***:3000/plugins/savantly-heatmap-panel?page=overview
+
+# Note: plugins provisioning is totally broken in 8.2.5 (stable HEAD)
+#       so keep all apps below commented,
+#       such apps will be installed by script called from sh/update.sh
+
+apiVersion: 1
+
+apps:

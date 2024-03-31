@@ -1,0 +1,29 @@
+# icmp
+
+- targets:
+    - localhost
+
+- targets:
+    - ***
+  labels:
+    gateway_in_area: hetzner
+    area: hetzner
+
+- targets:
+    - ***
+  labels:
+    gateway_in_area: digitalocean
+    area: digitalocean
+
+- targets:
+    - ***
+  labels:
+    gateway_in_area: leaseweb
+    area: leaseweb
+
+- targets:
+    - ***
+  labels:
+    gateway_in_area: office1
+    area: office1
+

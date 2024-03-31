@@ -1,0 +1,8 @@
+# linux node-exporter
+
+- targets: ['***:9100']
+  labels:
+    hostname: '*** ***hostname***'
+- targets: ['***:9100']
+  labels:
+    hostname: '*** ***'

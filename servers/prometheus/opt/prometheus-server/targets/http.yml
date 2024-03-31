@@ -1,0 +1,5 @@
+# http
+
+- targets:
+  - https://***.com
+  - https://***.eu

@@ -1,0 +1,128 @@
+route:
+  group_by: ['alertname','job'] # Put new alert to group, group name selected accourding this variable
+  group_wait: 10s               # After receive 1st alert and put it to group, wait $group_wait before doing something else,
+                                #   this also required to give a time to alertmanager to sort while count of alerts if HUGE
+  group_interval: 1m            # After send a first alert, group wait for $group_interval
+                                #   if new alert appears for some the same group but for new target - this $group_interval will be skipped
+  repeat_interval: 10m          # After $group_interval sleep done, it waits for $repeat_interval and wake up to check new alerts should be send.
+                                #   If some alert still firing it will be send again.
+                                #   Note $group_interval (for example 5) must be is a divisor of your $repeat_interval (for example 20).
+                                #   Also, on reload config this value will be used as resend alert delay
+  # default receiver
+  receiver: 'web.hook'
+
+  routes:                       # Note: in alertmanager.yml variable 'realert' must use only values listed below:
+  - match_re:
+      severity: debug
+      receiver: 'debug.hook'
+      repeat_interval: 1m
+      continue: true
+  - match:
+      realert: 0m
+      receiver: 'web.hook'
+      repeat_interval: 60s
+      continue: true
+  - match:
+      realert: 1m
+      receiver: 'web.hook'
+      repeat_interval: 1m
+      continue: true
+  - match:
+      realert: 3m
+      receiver: 'web.hook'
+      repeat_interval: 3m
+      continue: true
+  - match:
+      realert: 5m
+      receiver: 'web.hook'
+      repeat_interval: 5m
+      continue: true
+  - match:
+      realert: 30m
+      receiver: 'web.hook'
+      repeat_interval: 30m
+      continue: true
+  - match:
+      realert: 1h
+      receiver: 'web.hook'
+      repeat_interval: 1h
+      continue: true
+  - match:
+      realert: 2h
+      receiver: 'web.hook'
+      repeat_interval: 2h
+      continue: true
+  - match:
+      realert: 3h
+      receiver: 'web.hook'
+      repeat_interval: 3h
+      continue: true
+  - match:
+      realert: 4h
+      receiver: 'web.hook'
+      repeat_interval: 4h
+      continue: true
+  - match:
+      realert: 5h
+      receiver: 'web.hook'
+      repeat_interval: 5h
+      continue: true
+  - match:
+      realert: 6h
+      receiver: 'web.hook'
+      repeat_interval: 6h
+      continue: true
+  - match:
+      realert: 7h
+      receiver: 'web.hook'
+      repeat_interval: 7h
+      continue: true
+  - match:
+      realert: 8h
+      receiver: 'web.hook'
+      repeat_interval: 8h
+      continue: true
+  - match:
+      realert: 9h
+      receiver: 'web.hook'
+      repeat_interval: 9h
+      continue: true
+  - match:
+      realert: 10h
+      receiver: 'web.hook'
+      repeat_interval: 10h
+      continue: true
+  - match:
+      realert: 11h
+      receiver: 'web.hook'
+      repeat_interval: 11h
+      continue: true
+  - match:
+      realert: 12h
+      receiver: 'web.hook'
+      repeat_interval: 12h
+      continue: true
+  - match:
+      realert: 24h
+      receiver: 'web.hook'
+      repeat_interval: 24h
+      continue: true
+
+receivers:
+  - name: 'web.hook'
+    webhook_configs:
+    - url: 'http://127.0.0.1/alert.php'
+      max_alerts: 20       # max alerts in one message
+      send_resolved: false # send alert if alert firing no more
+  - name: 'debug.hook'
+    webhook_configs:
+    - url: 'http://127.0.0.1/alert_debug.php'
+      max_alerts: 20       # max alerts in one message
+      send_resolved: false # send alert if alert firing no more
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'dev', 'instance']

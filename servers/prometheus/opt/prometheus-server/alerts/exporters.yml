@@ -1,0 +1,544 @@
+# Examples  https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
+#           https://awesome-prometheus-alerts.grep.to/rules.html
+# Templates https://pkg.go.dev/text/template
+#           https://github.com/camptocamp/prometheus-puppetdb-sd/issues/7#issuecomment-358659973
+# Absents   Note absents of metrics will fail/empty queries and as result alerts will not creating,
+#           but in a fact monitoring 'up' metric is enought to know what metric collection continue.
+#           Do not use special prometheus-generated metrics like 'ALERTS', they are not persistent.
+#           Examples for absent check:
+#                checker_upload_last_succeeded{instance=”foo.bar”} != 1 \
+#             or absent(checker_upload_last_succeeded{instance=”foo.bar”}) == 1
+#           Note: absent() not a solution itself: https://www.linkedin.com/pulse/prometheus-alert-missing-metrics-labels-nirav-shah
+# Filters   Next filters may be added to each expr to avoid alerts:
+#             1. probe_success{gateway_in_area=~".+"} == 0    - means target area down, without value this returns 0/1 what means false/true
+#             2. on() hour() > 6 < 16                         - means match only in msk office working time 9-19 (UTC time used)
+# Delays    Between alerts we may got next delays
+#             1. global/scrape_interval: 15s                  - How othen collect the data from exporters
+#             2. scrape_configs/job_name/scrape_interval: 10s - May override global value for this job_name, each job_name has own alert file
+#             3. global/evaluation_interval: 15s              - How othen process collected data, better do not touch this till CPU/RAM is OK
+#             4. groups/rules/alert/for: 1m                   - For which perion expr should be checked
+#             5. groups/rules/alert/labels/realert: 1h        - How othen send alert again, realert value MUST be declared in alertmanager/alertmanager.yml
+#             6. normally 'for' must be > ('scrapeInterval' + 'evaluationInterval') to all work correctly
+#           As result:
+#             Possible 1st alert send delay time:
+#                min = [ for ]
+#                max = [ scrapeInterval + evaluationInterval + for ]
+#             Possible repeat alert send delay time:
+#                min = [ for + realert ]
+#                max = [ scrapeInterval + evaluationInterval + for + realert ]
+
+# To accept changes in this file please run:
+# /opt/***/sh/prometheus_reload.sh
+
+groups:
+- name: TargetMonitoring
+  rules:
+
+  # Some cron job exit with error on node
+  - alert: CronScriptExitWithNonZeroCode
+    expr: script_exit_code{is_cron="1"}!=0 and on() day_of_week() > 0 < 6 and on() hour() > 9 < 17
+    for: 1m
+    annotations:
+      summary: 'Cron job {{ $labels.cron_name }} failed on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log {{ $labels.output }}'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # IPsec gateway not respong to ping
+  - alert: GatewayReturnNoIcmpPong
+    expr: probe_success{gateway_in_area=~".+"} == 0 and on() day_of_week() > 0 < 6 and on() hour() > 6 < 16
+    for: 1m
+    annotations:
+      summary: 'Gateway {{ $labels.hostaddr }} of area "{{ $labels.area }}" returns no pong in 1 minute. Suppressing all alerts from this area'
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  # Bitcoin node not running process wich can sync world chain
+  - alert: BitcoinProcessNotRunning
+    expr: bitcoin_process_count == 0 and on(area)probe_success{gateway_in_area=~".+"}
+    for: 0s
+    annotations:
+      summary: 'Bitcoin sync process is not running on {{ $labels.hostaddr }} ({{ $labels.hostname }})'
+    labels:
+      severity: 'critical'
+      realert: 1h
+
+  # Bitcoin node far from world chain
+  - alert: BitcoinSyncHugeLag
+    expr: bitcoin_process_count == 1 and (bitcoin_world_blocks_count - bitcoin_local_blocks_count) > 20 and on(area)probe_success{gateway_in_area=~".+"}
+    for: 0s
+    annotations:
+      summary: 'Bitcoin lag more then 20 blocks from world chain on {{ $labels.hostaddr }} ({{ $labels.hostname }})'
+    labels:
+      severity: 'critical'
+      realert: 1h
+
+  # Low space now on NON-build Windows nodes in GB on mounted disks < 10 GB
+  - alert: FsLowNowWindowsLess10GB
+    expr: |
+        windows_logical_disk_free_bytes{volume=~".+:"}/1024/1024/1024 < 10
+        and on(instance)windows_logical_disk_free_bytes{hostname!~".*build.*|.*update-release-vm.*"}
+        and on(area)probe_success{gateway_in_area=~".+"}
+    for: 0s
+    annotations:
+      summary: 'Low free space in {{ $labels.volume }} on {{ $labels.hostaddr }} ({{ $labels.hostname }}):
+                now free {{
+                    printf `windows_logical_disk_free_bytes{instance="%s",volume="%s"}`
+                        $labels.instance
+                        $labels.volume
+                    | query | first | value | humanize1024
+                }} / {{
+                    printf `windows_logical_disk_size_bytes{instance="%s",volume="%s"}`
+                        $labels.instance
+                        $labels.volume
+                    | query | first | value | humanize1024
+                }}
+                '
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  # Low space now on build Windows nodes in GB on mounted disks <= 2 GB
+  - alert: FsLowNowWindowsLess2GB
+    expr: |
+        windows_logical_disk_free_bytes{volume=~".+:"}/1024/1024/1024 <= 2
+        and on(instance)windows_logical_disk_free_bytes{hostname=~".*build.*|.*update-release-vm.*"}
+        and on(area)probe_success{gateway_in_area=~".+"}
+    for: 0s
+    annotations:
+      summary: 'Low free space in {{ $labels.volume }} on {{ $labels.hostaddr }} ({{ $labels.hostname }}):
+                now free {{
+                    printf `windows_logical_disk_free_bytes{instance="%s",volume="%s"}`
+                        $labels.instance
+                        $labels.volume
+                    | query | first | value | humanize1024
+                }} / {{
+                    printf `windows_logical_disk_size_bytes{instance="%s",volume="%s"}`
+                        $labels.instance
+                        $labels.volume
+                    | query | first | value | humanize1024
+                }}
+                '
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  # No space predicted for NON-build Windows nodes
+  - alert: FsLowPredictedWindows
+    expr: |
+          node_filesystem_approx_used_bytes{least="1",ostype="Cygwin"} <= 0
+          and on(instance)windows_logical_disk_free_bytes{hostname!~".*build.*|.*update-release-vm.*"}
+          and on(area)probe_success{gateway_in_area=~".+"}
+    for: 0s
+    annotations:
+      summary: 'No free space within {{ $labels.inhours }} hours in {{ $labels.volume }} on {{ $labels.hostaddr }} ({{ $labels.hostname }}): now free {{ printf `windows_logical_disk_free_bytes{instance="%s",volume="%s"}` $labels.instance $labels.volume | query | first | value | humanize1024 }} / {{ printf `windows_logical_disk_size_bytes{instance="%s",volume="%s"}` $labels.instance $labels.volume | query | first | value | humanize1024 }}'
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  # Low space now on NON-build Linux nodes in GB for all filesystems except
+  # small partitions mountpoints:
+  #   /tmp         excluded since it always lower then 10 GB, see another rule for /tmp
+  #   /opt/encrypt excluded since it is special possible low space mount
+  #   /opt/witness excluded since it is special low space mount
+  #   /boot        excluded since only case it can be exhausted is deploy new kernel what is part and responsibility of OS upgrade process
+  #   /var/lib/vz/template/iso excluded since such mounpoint means special volume filled only by people hands and it's ok if volume will have only few MB free
+  # fstype=.*fuse.* is useless
+  - alert: FsLowNowLinuxLess10GB
+    expr: |
+          node_filesystem_avail_bytes{mountpoint!~"^(/tmp|/mnt/encrypt|/opt/nogit|/opt/witness|/boot.*|/var/lib/vz/template/iso)",fstype!~".*fuse.*",instance!~"(***):9100"}/1024/1024/1024 < 10
+          and on(instance)node_filesystem_size_bytes > 10*1024*1024*1024
+          and on(instance)node_filesystem_size_bytes{hostname!~".*build.*|.*update-release-vm.*"}
+          and on(area)probe_success{gateway_in_area=~".+"}
+    for: 0s
+    annotations:
+      summary: 'Low free space in {{ $labels.mountpoint }} on {{ $labels.hostaddr }} ({{ $labels.hostname }}): now free {{ printf `node_filesystem_avail_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }} / {{ printf `node_filesystem_size_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }}'
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  # Low space now for build Linux nodes <= 2GB
+  - alert: FsLowNowLinuxLess2GB
+    expr: |
+          node_filesystem_avail_bytes{mountpoint!~"^(/tmp|/mnt/encrypt|/opt/witness|/boot.*|/var/lib/vz/template/iso)",fstype!~".*fuse.*",instance!~"(***):9100"}/1024/1024/1024 <= 2
+          and on(instance)node_filesystem_size_bytes > 10*1024*1024*1024
+          and on(instance)node_filesystem_size_bytes{hostname=~".*build.*|.*update-release-vm.*"}
+          and on(area)probe_success{gateway_in_area=~".+"}
+    for: 0s
+    annotations:
+      summary: 'Low free space in {{ $labels.mountpoint }} on {{ $labels.hostaddr }} ({{ $labels.hostname }}): now free {{ printf `node_filesystem_avail_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }} / {{ printf `node_filesystem_size_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }}'
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  - alert: FsLowNowLinuxLess10GbOnSelectedHosts
+    expr: |
+          node_filesystem_avail_bytes{mountpoint!~"^(/tmp|/mnt/encrypt|/opt/witness|/boot.*|/var/lib/vz/template/iso)",fstype!~".*fuse.*",instance=~"(***):9100"}/1024/1024/1024 < 10
+          and node_filesystem_size_bytes > 10*1024*1024*1024
+          and on(area)probe_success{gateway_in_area=~".+"}
+    for: 0s
+    annotations:
+      summary: 'Low free space in {{ $labels.mountpoint }} on {{ $labels.hostaddr }} ({{ $labels.hostname }}): now free {{ printf `node_filesystem_avail_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }} / {{ printf `node_filesystem_size_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }} relert 1h'
+    labels:
+      severity: 'critical'
+      realert: 1h
+
+  # Low space on Linux node in GB for small partitions, NOTE: apply to small partitions only
+  # instance!~"***:9100 is exclude for abnormal /tmp partition on archlinux at 156 build-multiseat1-kernel-v3-15-8
+  - alert: FsLowNowLinuxSmallPartitionsFreePercentLess20
+    expr: (node_filesystem_avail_bytes{mountpoint=~"^(/tmp|/mnt/encrypt|/opt/nogit|/opt/witness)",instance!~"(***):9100"} / node_filesystem_size_bytes * 100) < 20
+    for: 0s
+    annotations:
+      summary: 'Low free space in {{ $labels.mountpoint }} on {{ $labels.hostaddr }} ({{ $labels.hostname }}): now free {{ printf `node_filesystem_avail_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }} / {{ printf `node_filesystem_size_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }}'
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  # No space on Linux node was predicted, NOTE: excluded some hosts
+  - alert: FsLowPredictedLinux
+    expr: |
+          node_filesystem_approx_used_bytes{least="1",ostype="GNU/Linux",instance!~"(***):9100"} <= 0
+          and on(instance)node_filesystem_free_bytes{hostname!~".*build.*|.*update-release-vm.*"}
+          and on(area)probe_success{gateway_in_area=~".+"}
+    for: 0s
+    annotations:
+      summary: 'No free space within {{ $labels.inhours }} hours in {{ $labels.mountpoint }} on {{ $labels.hostaddr }} ({{ $labels.hostname }}): now free {{ printf `node_filesystem_avail_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }} / {{ printf `node_filesystem_size_bytes{instance="%s",mountpoint="%s"}` $labels.instance $labels.mountpoint | query | first | value | humanize1024 }}'
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  # Node exporter cannot read some metrics from textfiles on node
+  # view: node_scrape_collector_success_textfile[24h])
+  - alert: TextFileScrapeSuccess
+    expr: count by (instance) (node_scrape_collector_success_textfile) < 1
+    for: 0s
+    annotations:
+      summary: 'Textfile scrape failed on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log {{ $labels.logfile }}'
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  # Many bounced mail which cannot be send
+  - alert: MailServerBouncedHigh
+    expr: node_mail_server_bounced > 5
+    for: 0s
+    annotations:
+      summary: 'mail server has {{ $value }} bounced mails on {{ $labels.hostaddr }}, log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Local exim database not responding
+  - alert: MailServerDatabaseIsNotAvailable
+    expr: node_mail_server_db_readable == 0
+    for: 0s
+    annotations:
+      summary: 'mail server cannot connect database on {{ $labels.hostaddr }}, log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # While check script starts, ssh-jump host using for connect to mail servers is down
+  - alert: MailServerExternalSshHostIsNotAvailable
+    expr: node_mail_server_external_ssh_available == 0
+    for: 0s
+    annotations:
+      summary: 'mail server cannot connect to external ssh server {{ $labels.address }}:{{ $labels.port }} on {{ $labels.hostaddr }} log /var/log/cron_check_mail.log'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Cannot connect to some public MX server (normally smtp.google.com)
+  - alert: MailServerForeignMxIsNotAvailable
+    expr: node_mail_server_foreign_mx_available == 0
+    for: 0s
+    annotations:
+      summary: 'mail server cannot connect to {{ $labels.address }}:{{ $labels.port }} on {{ $labels.hostaddr }} log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Cannot resolve list of MX records in public DNS
+  - alert: MailDomainMxsIsNotResolved
+    expr: node_mail_domain_mxs_resolved == 0
+    for: 0s
+    annotations:
+      summary: 'mail server cannot resolve public MX names for domain {{ $labels.domain }} on {{ $labels.hostaddr }} log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Cannot resolve mail server address in public DNS
+  - alert: MailDomainMxIsNotResolved
+    expr: node_mail_domain_mx_resolved == 0
+    for: 0s
+    annotations:
+      summary: 'mail server cannot resolve public MX name for server {{ $labels.host }} on {{ $labels.hostaddr }}, log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # While check one of domains, ssh-jump host using for connect to mail servers is down
+  - alert: MailDomainMxSshNotAvailable
+    expr: node_mail_domain_mx_ssh_available == 0
+    for: 0s
+    annotations:
+      summary: 'mail server fail connect to {{ $labels.ssh_address }}:{{ $labels.ssh_port }} for check {{ $labels.host }} log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Mail server TCP port is not reachable
+  - alert: MailDomainTcpConnectNotAvailable
+    expr: node_mail_domain_mx_connect_available == 0
+    for: 0s
+    annotations:
+      summary: 'mail server cannot made TCP connect to {{ $labels.host }} ({{ $labels.address }}) on {{ $labels.hostaddr }} log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Mail server returns unexpectable string right after success tonnect to it
+  - alert: MailDomainSmtpServiceIsNotAvailable
+    expr: node_mail_domain_mx_smtp_service_available == 0
+    for: 0s
+    annotations:
+      summary: 'mail server after TCP connect to {{ $labels.host }} cannot got correct smtp status 220 on {{ $labels.hostaddr }}, log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Certificate returned by mail server have to expire soon
+  - alert: MailDomainMxSslExpiringSoon
+    expr: node_mail_domain_mx_ssl_expire_in_days <= 25
+    for: 0s
+    annotations:
+      summary: 'SSL certificate on smtp server {{ $labels.host }} expiring in {{ $value }} days, log /var/log/cron_check_mail.log'
+    labels:
+      severity: 'debug'
+      realert: 1d
+
+  # Certificate returned by mail server have not match mail servers DNS name
+  - alert: MailDomainSslNotMatchDomain
+    expr: node_mail_domain_mx_ssl_match_domain == 0
+    for: 0s
+    annotations:
+      summary: 'SSL certificate on smtp server {{ $labels.host }} issued for wrong domain, log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Certificate returned by mail server cannot be verified by curl
+  - alert: MailDomainSslVerifyFailed
+    expr: node_mail_domain_mx_ssl_verified == 0
+    for: 0s
+    annotations:
+      summary: 'SSL certificate on smtp server {{ $labels.host }} cannot be completely verified, log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # After the successful connect and SSL handshake mail server return something unexpected
+  - alert: MailDomainMxCompleteAvailable
+    expr: node_mail_domain_mx_complete_available == 0
+    for: 0s
+    annotations:
+      summary: 'mail server after success SSL verify got wrong smtp code {{ $labels.code }} instead of 214 from {{ $labels.host }}, log /var/log/cron_check_mail.log: {{ $labels.error }}'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Incoming Dmarc reports have errors, may be false positive
+  - alert: MailDmarcErrors
+    expr: node_mail_dmarc_errors > 10
+    for: 0s
+    annotations:
+      summary: 'Mail server has {{ $value }} DMARC errors on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/cron_check_dmarc.log'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # exim panics, exim may be completely unusable
+  # view: node_mail_log_panic[24h]
+  - alert: EximPanicLogUpdated
+    expr: node_mail_log_panic > 0
+    for: 0s
+    annotations:
+      summary: 'New lines in Exim panic log on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/panic.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # Spamhouse etc do not process out requests, incoming mail will fail
+  - alert: EximMainLogInternetSpamCheckerFailed
+    expr: node_mail_log_main{error=~".*open resolver failed.*"} > 0
+    for: 0s
+    annotations:
+      summary: 'Internet Spamcheck down: "{{ $labels.error }}" on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # Symptom of wrong configuration
+  - alert: EximMainLogTemporaryRejectedInAcl
+    expr: node_mail_log_main{error=~".*temporarily rejected connection in.+ACL.*"} > 0
+    for: 0s
+    annotations:
+      summary: '{{ $value }} mails was "temporarily rejected" in ACL" on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # Mail server cannot figure out where to send mail
+  - alert: EximMainLogEximUnrouteableAddress
+    expr: node_mail_log_main{error=~".*Unrouteable address.*"} > 10
+    for: 0s
+    annotations:
+      summary: '{{ $value }} mails not delivered due "Unrouteable address" on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+# This only alerting then local user really not found, not a error
+#  # Mail server cannot deliver mail, due no such local user known by dovecot
+#  - alert: EximMainLogEximDovecotDeliveryTransportReturnError
+#    expr: node_mail_log_main{error=~".*dovecot_delivery transport returned.*"} > 0
+#    for: 0s
+#    annotations:
+#      summary: 'mail "{{ $labels.error }}" mails not delivered due "{{ $labels.error }}" on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+#    labels:
+#      severity: 'critical'
+#      realert: 2h
+
+  # Exim cannot setup outgoing TCP connection, probable network fail
+  - alert: EximMainLogOutConnectionRefused
+    expr: node_mail_log_main{error=~".*Connection refused.*", direction="out"} > 5
+    for: 0s
+    annotations:
+      summary: 'Mail has {{ $value }} outgoing "Connection refused" on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # Exim cannot continue outgoing TCP connection, probable network fail
+  - alert: EximMainLogOutConnectionTimedOut
+    expr: node_mail_log_main{error=~".*Connection timed out.*", direction="out"} > 5
+    for: 0s
+    annotations:
+      summary: 'Mail has {{ $value }} outgoing "Connection timed out" on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # Exim cannot query DNS, probable network fail
+  - alert: EximMainLogOutDnsLookupDefer
+    expr: node_mail_log_main{error=~".*DNS.+lookup defer.*", direction="out"} > 5
+    for: 0s
+    annotations:
+      summary: 'Mail has {{ $value }} outgoing "{{ $labels.error }}" on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # Exim cannot deliver some outgoing mails and froze it for the best times (for few retries)
+  - alert: EximMainLogFrozenForRetry
+    expr: node_mail_log_main{error=~".*Frozen \\(delivery error message\\).*"} > 0
+    for: 0s
+    annotations:
+      summary: 'Mail has {{ $value }} outgoing "Frozen (delivery error message)" on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # Some local client got timeout while send mail to our server
+  - alert: EximMainLogLocalClientSendTLSSmtpTimeout
+    expr: node_mail_log_main{error=~".*SMTP command TLS timeout on connection*", direction="out"} > 0
+    for: 0s
+    annotations:
+      summary: 'Got {{ $value }} "SMTP command TLS timeout on connection" while local client send mails on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+
+  # Some local client got timeout while send mail to our server
+  - alert: EximMainLogLocalClientSendSmtpTimeout
+    expr: node_mail_log_main{error=~".*SMTP command timeout on connection*", direction="out"} > 0
+    for: 0s
+    annotations:
+      summary: 'Got {{ $value }} "SMTP command timeout on connection" while local client send mails on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # Mail server about to give up to send early frozen message
+  - alert: EximMainLogFrozenNowFailed
+    expr: node_mail_log_main{error=~".*error ignored.*", direction="out"} > 0
+    for: 0s
+    annotations:
+      summary: 'Got {{ $value }} failed frozen mails (see for: error ignored) on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'debug'
+      realert: 2h
+
+  # Foreign mail server decide we are spam-senders
+  - alert: EximMainLogForeignServerDecideWeAreSpammers
+    expr: node_mail_log_main{error=~".*unsolicited mail originating from your IP address.*", direction="out"} > 0
+    for: 0s
+    annotations:
+      summary: 'Got {{ $value }} foreign servers errors: unsolicited mail originating from your IP address {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+# Not-informative since every re-try counting, use Bounced instead
+#  # Receiving server delayed acceptance of the message
+#  - alert: EximMainLogDeferredMails
+#    expr: node_mail_log_deferred > 10
+#    for: 0s
+#    annotations:
+#      summary: 'got {{ $value }} deferred mail on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+#    labels:
+#      severity: 'critical'
+#      realert: 2h
+
+  # Count of mails which failed to deliver
+  - alert: EximMainLogFailedMails
+    expr: node_mail_log_failed > 3
+    for: 0s
+    annotations:
+      summary: 'Got {{ $value }} failed mail on {{ $labels.hostaddr }} ({{ $labels.hostname }}) log /var/log/exim4/main.log'
+    labels:
+      severity: 'critical'
+      realert: 2h
+
+  # Foreign mail server decide we are banned bu Spamhouse
+  - alert: EximMainLogForeignServerDecideWeAreSpamhouseBanned
+    expr: node_mail_log_main{error=~".*Spamhouse has banned us.*", direction="out"} > 0
+    for: 0s
+    annotations:
+      summary: 'Foreign mail server report we are banned by Spamhouse: {{ $labels.error }} on {{ $labels.hostaddr }} ({{ $labels.hostname }})'
+    labels:
+      severity: 'critical'
+      realert: 24h
+
+  # HTTP checks
+  - alert: HttpCheckOfWebSites
+    expr: probe_success{job="blackbox-http"} < 1
+    for: 2m
+    annotations:
+      summary: 'HTTP check failed for {{ $labels.instance }}: status={{ printf `probe_http_status_code{instance="%s"}` $labels.instance | query | first | value }}'
+    labels:
+      severity: 'critical'
+      realert: 5m
+
+  # MySQL check
+  - alert: MysqlCheckServiceUp
+    expr: node_systemd_unit_state{name="mysql.service",state="active"} < 1
+    for: 0s
+    annotations:
+      summary: 'MySQL service down on {{ $labels.hostaddr }} ({{ $labels.hostname }})'
+    labels:
+      severity: 'critical'
+      realert: 1h

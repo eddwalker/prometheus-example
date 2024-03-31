@@ -1,0 +1,8 @@
+# windows-exporter
+
+- targets: ['***:9182']
+  labels:
+    hostname: '***'
+- targets: ['***:9182']
+  labels:
+    hostname: '*** ***'
